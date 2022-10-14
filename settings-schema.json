@@ -1,0 +1,43 @@
+{
+
+    "delay": {
+        "default": 300,
+        "type": "spinbutton",
+        "min": 10,
+        "max": 3600,
+        "description" : "Referesh interva",
+        "units" : "seconds",
+        "step": 10
+    },
+
+    "server": {
+        "type": "entry",
+        "default": "https://server.growatt.com",
+        "description": "Growatt server", 
+        "indent": true,
+        "tooltip": "https://server.growatt.com"
+    },
+    
+    "plantId": {
+        "type": "entry",
+        "default": "",
+        "description": "Plant Id (empty for default)", 
+        "indent": true
+    },
+    
+    "account": {
+        "type": "entry",
+        "default": "",
+        "description": "Growatt Account", 
+        "indent": true,
+        "tooltip": "Username"
+    },
+    
+    "password": {
+        "type": "entry",
+        "default": "",
+        "description": "Growatt Account Password", 
+        "indent": true,
+        "tooltip": "Password"
+    }
+}

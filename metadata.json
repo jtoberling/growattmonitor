@@ -1,0 +1,12 @@
+{
+    "max-instances": "1",
+    "description": "Growatt Solar Monitor",
+    "name": "Growatt Monitor",
+    "version": "0.0.1",
+    "uuid": "growattmonitor@jtoberling",
+    "multiversion": true,
+    "author": "jtoberling",
+    "last-edited": 1665758381, 
+    "prevent-decorations": false, 
+    "icon": "lead-64"
+}
