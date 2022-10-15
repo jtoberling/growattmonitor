@@ -4,7 +4,10 @@ const St = imports.gi.St;
 const Mainloop = imports.mainloop;
 const Lang = imports.lang;
 const Soup = imports.gi.Soup;
-
+const Clutter = imports.gi.Clutter;
+const Cairo = imports.cairo;
+const Signals = imports.signals;
+const SignalManager = imports.misc.signalManager;
 
 
 class GrowattDesklet extends Desklet.Desklet {
@@ -18,10 +21,18 @@ class GrowattDesklet extends Desklet.Desklet {
     
     onePlantId = null;
     
+    dataBox = null;
+    gridBox = null;
+    
+    _nominalPower = 0;
+    
 
     constructor(metadata, deskletId) {
         super(metadata, deskletId);
         this.metadata = metadata;
+        
+        this._signals = new SignalManager.SignalManager(null);
+
 
         this.settings = new Settings.DeskletSettings(this, this.metadata.uuid, this.instance_id);
 
@@ -36,48 +47,43 @@ class GrowattDesklet extends Desklet.Desklet {
         
         this.setUpdateTimer();
     }
+    
+    on_setting_changed() {
+        this.performStatusCheck();
+        this.performStatusCheckDataGrid();
+    }
 
 
     render() {
-
         this.setHeader(_('Growatt Monitor'));
       
         this.updated = new St.Label({});
         this.updated.set_text('Loading: ' + this.server + ' ...' );
         
-//        this.window.add_actor(this.text);
-        
        this.mainBox = new St.BoxLayout({
             vertical : true,
-//            width : this.width,
-//            height : this.height,
-//            style_class : "quotes-reader"
         });
         
         if (this.dataBox == null ) {
           this.dataBox = new St.BoxLayout({ vertical: true});
         }
         
+        if (this.gridBox == null ) {
+          this.gridBox = new St.BoxLayout({ vertical: true});
+        }
+        
         this.mainBox.add(this.updated);
         this.mainBox.add(this.dataBox);
-
+        this.mainBox.add(this.gridBox);
+        
         this.setContent(this.mainBox);        
-    
-    }
-    
-    unrender() {
-        this.mainBox.destroy_all_children();
-        this.mainBox.destroy();        
-    }
-  
-    removeUpdateTimer() {    
-      if (this.updateLoopId) {
-        Mainloop.source_remove(this.updateLoopId);
-      }
+
     }
 
     on_desklet_removed() {
-      this.removeUpdateTimer();  
+      if (this.updateLoopId) {
+        Mainloop.source_remove(this.updateLoopId);
+      }
     }
     
     
@@ -107,6 +113,7 @@ class GrowattDesklet extends Desklet.Desklet {
         this.updated.set_text(this.__formatDate(new Date()));
         
         this.performStatusCheck();
+        this.performStatusCheckDataGrid();
         
         this.setUpdateTimer();
     
@@ -115,11 +122,10 @@ class GrowattDesklet extends Desklet.Desklet {
 
     setUpdateTimer() {
 
-        var timeOut = this.delay 
+        let timeOut = this.delay 
         if (!this.statusOk) {
           timeOut = 5;
         }
-        //global.log('MonitorTO: ', timeOut);        
         this.updateLoopId = Mainloop.timeout_add_seconds(timeOut, Lang.bind(this, this.onUpdate));
     }
     
@@ -131,6 +137,8 @@ class GrowattDesklet extends Desklet.Desklet {
         This function creates all of our HTTP requests.
     */
     httpRequest(method,url,headers,postParameters,callbackF) {
+    
+
         var message = Soup.Message.new(
             method,
             url
@@ -141,10 +149,6 @@ class GrowattDesklet extends Desklet.Desklet {
                 message.request_headers.append(headers[i][0],headers[i][1]);
             }
         }
-        
-        //if (this.gzipEnabled) {
-        //    message.request_headers.append("Accept-Encoding","gzip");
-        //}
 
         if (postParameters !== null) {
             message.set_request("application/x-www-form-urlencoded",2,postParameters);
@@ -152,12 +156,10 @@ class GrowattDesklet extends Desklet.Desklet {
         
         if (this.cookieStore !== null) {
             Soup.cookies_to_request( this.cookieStore, message );
-            
         }
 
         this.httpSession.queue_message(message,
             Lang.bind(this, function(session, response) {
-            
                 if (response.status_code !== Soup.KnownStatusCode.OK) {
                     global.log("growattMonitor: HTTPREQUESTERROR: ", response.status_code + " : " + response.response_body.data);
                 }
@@ -172,6 +174,13 @@ class GrowattDesklet extends Desklet.Desklet {
 
     performLogin() {
       
+        if (this.lockPerformLogin) {
+          return;
+        }
+      
+        this.lockPerformLogin = true;
+        
+      
         const url = this.server + '/login' ; 
         const data = 'account=' + this.account + '&password=' + this.password + '&validateCode=&isReadPact=0';
         
@@ -181,22 +190,18 @@ class GrowattDesklet extends Desklet.Desklet {
           null, 		// headers
           data, 		// postParams
           function(context, message, body) {
-
+            context.lockPerformLogin = false;
             if (message.status_code == Soup.KnownStatusCode.OK) {
-                var result = JSON.parse(body);
+                let result = JSON.parse(body);
                 if (result.result==1) {
                   context.login = true;
-                  
-                  global.log('growattMonitor: Login: TRUE');
                   
                   const list = Soup.cookies_from_response(message);
                   
                   context.cookieStore = list;
                   
                   context.cookieStore.forEach( function(c) {
-                    //global.log(c.name, c.value);
                     if (c.name=='onePlantId') {
-                      //global.log('onePlantId set to: ', c.value);
                       context.onePlantId = c.value;
                     }
                   });
@@ -212,36 +217,123 @@ class GrowattDesklet extends Desklet.Desklet {
         );
     }
     
+
+    
+    repaintDataGrid(area) { 
+        
+        let pacArr = this._daychartresult;
+        let nominalPower = this._nominalPower;
+        
+        let cr = area.get_context();
+        let [width, height] = area.get_surface_size();
+        let color = area.get_theme_node().get_foreground_color();
+
+        cr.setSourceRGBA ( 0.3,  1.0,  0.3, 0.5); // RGBa
+
+        pacArr.forEach( function(pac, i) {
+            if (pac > 0) {
+              let x = width * ( i / pacArr.length  ) ;
+              let y = height - ( height * (  pac / nominalPower  ) );
+              cr.rectangle(x, y, 2, height);
+              cr.stroke();
+            }
+        });
+        
+        
+
+        cr.$dispose();     
+        
+    }
+    
+    onMouseMoveEvent(actor, event) {
+      global.log('onMouseMoveEvent', actor, event);
+    }
+    
+    onStatusCheckDataGrid(context, pacarr) {
+      
+      context.gridBox.destroy_all_children();
+     
+      context._drawingArea = new St.DrawingArea({width: 400, height: 80});
+      context.gridBox.add(  context._drawingArea, { span: -1, expand: true } );
+      context._signals.connect( context._drawingArea, 'repaint',     Lang.bind(context, context.repaintDataGrid) );  
+      context._signals.connect( context._drawingArea, 'enter-event', Lang.bind(context, context.onMouseMoveEvent) );  
+
+    }
+    
+    
+    performStatusCheckDataGrid() {  
+    
+      if (!this.login) {
+          return;
+       }      
+
+      let plantId = this.plantId;
+      if (plantId.length==0) {
+        plantId = this.onePlantId;
+      }
+      let date = new Date();  
+      let today = date.getFullYear().toString();
+      today += '-';
+      today +=  (date.getMonth() + 1).toString().padStart(2, '0');
+      today += '-';
+      today += date.getDate().toString().padStart(2, '0');
+
+       const url = this.server + '/panel/max/getMAXDayChart';
+       const data = 'date=' + today + '&plantId=' + plantId;
+       
+       this.httpRequest(
+          'POST', 
+          url, 
+          null, 		// headers
+          data, 		// postParams
+          function(context, message, body) {
+
+          
+              if (message.status_code == Soup.KnownStatusCode.OK) {
+                context.statusOk = true;
+                let result = JSON.parse(body);
+            
+                if (result.result=='1') {                
+                    context._daychartresult = result.obj.pac;
+                    context.onStatusCheckDataGrid(context,result.obj.pac);
+                }
+                
+              } else {
+                //context.statusOk = false;
+              }
+          }
+        );     
+      
+    }
+    
     onStatusCheckData(context, dataobj) {
 
       context.dataBox.destroy_all_children();
       
       dataobj.datas.forEach( function(d, i) {      
         
-          //global.log(d);
-
-          var color = 'lightgreen';
-          if (d.status = '-1') {
+          let color = 'lightgreen';
+          if (d.status == '-1') {
             color = 'red';
           }
 
+          context._nominalPower = d.nominalPower;
+
           const labelPlantModel =  new St.Label({
             text : d.plantName + ' ('+d.deviceModel+' ' + (parseInt(d.nominalPower)/1000) +'kW, Id:'+d.plantId+')',
-            style : "width: 30em; color: "+color+"; text-decoration-line: underline; text-shadow: 1px 1px;"
+            style : "width: 35em; color: "+color+"; text-decoration-line: underline; text-shadow: 1px 1px;"
           });  
           context.dataBox.add(labelPlantModel);
           
           const labelPacToday =  new St.Label({
-            text : '  - Pac: ' + d.pac +'kW  Today: ' + d.eToday + 'kWh    Month: ' + d.eMonth +'kWh   Total: '+d.eTotal +'kWh'   ,
+            text : '  - Actual: ' + d.pac +'W   Today: ' + d.eToday + 'kWh    Month: ' + d.eMonth +'kWh   Total: '+d.eTotal +'kWh'   ,
             style : "width: 30em;"
           });  
           context.dataBox.add(labelPacToday);
                     
       });
-      
           
-    }
-    
+    }    
     
     performStatusCheck() {
     
@@ -250,11 +342,11 @@ class GrowattDesklet extends Desklet.Desklet {
           return;
         }
 
-        var plantId = this.plantId;
+        let plantId = this.plantId;
         if (plantId.length==0) {
           plantId = this.onePlantId;
         }
-        //global.log('PlantId: ', plantId);
+
         const url = this.server + '/panel/getDevicesByPlantList?currPage=1&plantId=' + plantId; //1487530';
         
         this.httpRequest(
@@ -265,18 +357,18 @@ class GrowattDesklet extends Desklet.Desklet {
           function(context, message, body) {
               if (message.status_code == Soup.KnownStatusCode.OK) {
                 context.statusOk = true;
-                var result = JSON.parse(body);
+                let result = JSON.parse(body);
+                
                 context.onStatusCheckData(context,result.obj);
+
+                
               } else {
                 //context.statusOk = false;
               }
           }
-          );
+        );
     
     }
-    
-    
-
 }
 
 
