@@ -28,6 +28,9 @@ class GrowattDesklet extends Desklet.Desklet {
     
     _nominalPower = 0;
     
+    _emptyGridBoxInProgress = false;
+    _updateInProgress = false;
+    
 
     constructor(metadata, deskletId) {
         super(metadata, deskletId);
@@ -43,6 +46,8 @@ class GrowattDesklet extends Desklet.Desklet {
         this.settings.bind('server', 'server', this.on_setting_changed);
         this.settings.bind('plantId', 'plantId', this.on_setting_changed);
         this.settings.bind('account', 'account', this.on_setting_changed);
+        this.settings.bind('starttime', 'starttime', this.on_setting_changed);
+        this.settings.bind('endtime', 'endtime', this.on_setting_changed);
 
         this.STORE_SCHEMA = new Secret.Schema("org.GrowattMonitorDesklet.Schema",Secret.SchemaFlags.NONE,{});
         
@@ -52,8 +57,7 @@ class GrowattDesklet extends Desklet.Desklet {
     }
     
     on_setting_changed() {
-        this.performStatusCheck();
-        this.performStatusCheckDataGrid();
+        this.onUpdate();
     }
 
     on_password_stored(source, result) {
@@ -72,30 +76,48 @@ class GrowattDesklet extends Desklet.Desklet {
             dialog.open();
             
     }    
+    
+    onRefreshClicked() {
+        this.onUpdate();
+    }
 
     render() {
         this.setHeader(_('Growatt Monitor'));
       
-        this.updated = new St.Label({});
-        this.updated.set_text('Loading: ' + this.server + ' ...' );
+        this.headBox = new St.BoxLayout({ vertical: false });
+            
+            this.updated = new St.Label({});
+            this.updated.set_text('Loading: ' + this.server + ' ...' );
+            
+            let paddingBox = new St.Bin({ width: 10 });
         
-        this.mainBox = new St.BoxLayout({
-            vertical : true,
-        });
+            this.refreshButton = new St.Button();
+            this.refreshIcon = new St.Icon({
+                              icon_name: 'restart',
+                              icon_size: 20, 
+                              icon_type: St.IconType.SYMBOLIC
+            });
+            this.refreshButton.set_child(this.refreshIcon);
+            this.refreshButton.connect("clicked", Lang.bind(this, this.onRefreshClicked));
+            
         
-        if (this.dataBox == null ) {
-          this.dataBox = new St.BoxLayout({ vertical: true});
-        }
+        this.headBox.add(this.updated);
+        this.headBox.add(paddingBox, { expand: true });
+        this.headBox.add_actor(this.refreshButton);
         
-        if (this.gridBox == null ) {
-          this.gridBox = new St.BoxLayout({ vertical: true});
-        }
+        this.dataBox = new St.BoxLayout({ vertical: true });
+        this.gridBox = new St.BoxLayout({ vertical: true });
         
-        this.mainBox.add(this.updated);
+        this.mainBox = new St.BoxLayout({ vertical: true });
+        this.mainBox.add_actor(this.headBox);
         this.mainBox.add(this.dataBox);
         this.mainBox.add(this.gridBox);
         
         this.setContent(this.mainBox);        
+
+        this.headBox.connect( 'enter-event', () => {
+            global.log('enter...');
+        } );  
 
     }
 
@@ -129,21 +151,34 @@ class GrowattDesklet extends Desklet.Desklet {
 
     onUpdate() {
     
-        this.updated.set_text(this.__formatDate(new Date()));
+        if (this._updateInProgress) {
+            return;
+        } else {
         
-        this.performStatusCheck();
-        this.performStatusCheckDataGrid();
-        
-        this.setUpdateTimer();
+            this._updateInProgress = true;
+    
+            this.updated.set_text(this.__formatDate(new Date()));
+            
+            this.performStatusCheck();
+            this.performStatusCheckDataGrid();
+            
+            this.setUpdateTimer();
+            
+            this._updateInProgress = false;
+        }
     
     }
         
 
     setUpdateTimer() {
 
+        if (this.updateLoopId) {
+          Mainloop.source_remove(this.updateLoopId);
+        }
+
         let timeOut = this.delay 
         if (!this.statusOk) {
-          timeOut = 5;
+          timeOut = 15;
         }
         this.updateLoopId = Mainloop.timeout_add_seconds(timeOut, Lang.bind(this, this.onUpdate));
     }
@@ -189,13 +224,25 @@ class GrowattDesklet extends Desklet.Desklet {
         return;
     }
 
+    _emptyGridBox(context) {
+      
+      if (context._emptyGridBoxInProgress) {
+        return;
+      } else {
+        context._emptyGridBoxInProgress = true;
+        context.gridBox.destroy_all_children();
+        context._emptyGridBoxInProgress = false;
+      }
+    
+    }
+
 
     _failedLogin(context) {
         context.login = false;
         context.cookieStore = null;
         global.log('growattMonitor: Login: FALSE');    
         
-        context.gridBox.destroy_all_children();
+        context._emptyGridBox(context);
         
         const errorLabel = new St.Label({ text: _('LOGIN_ERROR: Check credentials configuration!'), style: 'color: red;' });
         
@@ -260,18 +307,34 @@ class GrowattDesklet extends Desklet.Desklet {
         let pacArr = this._daychartresult;
         let nominalPower = this._nominalPower;
         
+        let st = this.starttime;
+        let et = this.endtime;
+        
         let cr = area.get_context();
         let [width, height] = area.get_surface_size();
         let color = area.get_theme_node().get_foreground_color();
 
         cr.setSourceRGBA ( 0.3,  1.0,  0.3, 0.5); // RGBa
+        
+        // GuruMeditation
+        let s2l = width * st / ( et - st); 
+        let e2l = width * et / ( et - st); 
+        let w2  = s2l + e2l;
+        let f   = w2 / width;
 
         pacArr.forEach( function(pac, i) {
             if (pac > 0) {
               let x = width * ( i / pacArr.length  ) ;
-              let y = height - ( height * (  pac / nominalPower  ) );
-              cr.rectangle(x, y, 2, height);
-              cr.stroke();
+              
+              let xx = x * f - s2l;
+              
+              // Display only if xx in range
+              if (xx > 0 && xx < width) {
+                  let y = height - ( height * (  pac / nominalPower  ) );
+              
+                  cr.rectangle(xx, y, 2, height);
+                  cr.stroke();
+              }
             }
         });
         
@@ -281,18 +344,14 @@ class GrowattDesklet extends Desklet.Desklet {
         
     }
     
-    onMouseMoveEvent(actor, event) {
-      global.log('onMouseMoveEvent', actor, event);
-    }
-    
     onStatusCheckDataGrid(context, pacarr) {
       
-      context.gridBox.destroy_all_children();
+      context._emptyGridBox(context);;
      
       context._drawingArea = new St.DrawingArea({width: 400, height: 80});
-      context.gridBox.add(  context._drawingArea, { span: -1, expand: true } );
+      context.gridBox.add_actor(  context._drawingArea, { span: -1, expand: true } );
       context._signals.connect( context._drawingArea, 'repaint',     Lang.bind(context, context.repaintDataGrid) );  
-      context._signals.connect( context._drawingArea, 'enter-event', Lang.bind(context, context.onMouseMoveEvent) );  
+      
 
     }
     
