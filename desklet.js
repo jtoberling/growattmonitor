@@ -8,6 +8,8 @@ const Clutter = imports.gi.Clutter;
 const Cairo = imports.cairo;
 const Signals = imports.signals;
 const SignalManager = imports.misc.signalManager;
+const ModalDialog = imports.ui.modalDialog;
+const Secret = imports.gi.Secret;
 
 
 class GrowattDesklet extends Desklet.Desklet {
@@ -41,7 +43,8 @@ class GrowattDesklet extends Desklet.Desklet {
         this.settings.bind('server', 'server', this.on_setting_changed);
         this.settings.bind('plantId', 'plantId', this.on_setting_changed);
         this.settings.bind('account', 'account', this.on_setting_changed);
-        this.settings.bind('password', 'password', this.on_setting_changed);
+
+        this.STORE_SCHEMA = new Secret.Schema("org.GrowattMonitorDesklet.Schema",Secret.SchemaFlags.NONE,{});
         
         this.render();
         
@@ -53,6 +56,22 @@ class GrowattDesklet extends Desklet.Desklet {
         this.performStatusCheckDataGrid();
     }
 
+    on_password_stored(source, result) {
+        Secret.password_store_finish(result);
+    }
+    
+    onPasswordSave() {
+
+            let dialog = new PasswordDialog (
+                _("'%s' settings..\nPlease enter password:").format(this._(this._meta.name)),
+                (password) => {
+                    Secret.password_store(this.STORE_SCHEMA, {}, Secret.COLLECTION_DEFAULT,
+                      "GrowattMonitor_Desklet_password", password, null, this.on_password_stored);
+                }
+            );
+            dialog.open();
+            
+    }    
 
     render() {
         this.setHeader(_('Growatt Monitor'));
@@ -60,7 +79,7 @@ class GrowattDesklet extends Desklet.Desklet {
         this.updated = new St.Label({});
         this.updated.set_text('Loading: ' + this.server + ' ...' );
         
-       this.mainBox = new St.BoxLayout({
+        this.mainBox = new St.BoxLayout({
             vertical : true,
         });
         
@@ -138,7 +157,6 @@ class GrowattDesklet extends Desklet.Desklet {
     */
     httpRequest(method,url,headers,postParameters,callbackF) {
     
-
         var message = Soup.Message.new(
             method,
             url
@@ -161,7 +179,7 @@ class GrowattDesklet extends Desklet.Desklet {
         this.httpSession.queue_message(message,
             Lang.bind(this, function(session, response) {
                 if (response.status_code !== Soup.KnownStatusCode.OK) {
-                    global.log("growattMonitor: HTTPREQUESTERROR: ", response.status_code + " : " + response.response_body.data);
+                    global.log("growattMonitor: HTTPREQUESTERROR: ", response.status_code );
                 }
 
                 callbackF(this, message, message.response_body.data);
@@ -170,51 +188,69 @@ class GrowattDesklet extends Desklet.Desklet {
         );
         return;
     }
+
+
+    _failedLogin(context) {
+        context.login = false;
+        context.cookieStore = null;
+        global.log('growattMonitor: Login: FALSE');    
+        
+        context.gridBox.destroy_all_children();
+        
+        const errorLabel = new St.Label({ text: _('LOGIN_ERROR: Check credentials configuration!'), style: 'color: red;' });
+        
+        context.gridBox.add( errorLabel );
+    }
     
+        
 
     performLogin() {
       
         if (this.lockPerformLogin) {
           return;
         }
-      
+
         this.lockPerformLogin = true;
-        
-      
+
+        this.password = Secret.password_lookup_sync(this.STORE_SCHEMA, {}, null );
+
         const url = this.server + '/login' ; 
         const data = 'account=' + this.account + '&password=' + this.password + '&validateCode=&isReadPact=0';
-        
+
         this.httpRequest(
-          'POST', 
-          url, 
-          null, 		// headers
-          data, 		// postParams
-          function(context, message, body) {
-            context.lockPerformLogin = false;
-            if (message.status_code == Soup.KnownStatusCode.OK) {
-                let result = JSON.parse(body);
-                if (result.result==1) {
-                  context.login = true;
+            'POST', 
+            url, 
+            null, 		// headers
+            data, 		// postParams
+            function(context, message, body) {
+                    context.lockPerformLogin = false;
+                    if (message.status_code == Soup.KnownStatusCode.OK) {
+                        let result = JSON.parse(body);
+                        if (result.result==1) {
+                            context.login = true;
                   
-                  const list = Soup.cookies_from_response(message);
+                            const list = Soup.cookies_from_response(message);
                   
-                  context.cookieStore = list;
+                            context.cookieStore = list;
                   
-                  context.cookieStore.forEach( function(c) {
-                    if (c.name=='onePlantId') {
-                      context.onePlantId = c.value;
-                    }
-                  });
-                  
-                  
-                }
-            } else {
-                context.login = false;
-                context.cookieStore = null;
-                global.log('growattMonitor: Login: FALSE');
-            }
-          }
-        );
+                            context.cookieStore.forEach( function(c) {
+                                 if (c.name=='onePlantId') {
+                                    context.onePlantId = c.value;
+                                 }
+                            }); // forEach
+                            
+                            //
+                            
+                        } else {
+                            // if result.result<>1
+                            context._failedLogin(context);
+                        }
+                     } else { 
+                         // Status no ok
+                         context._failedLogin(context);;
+                     } // if (message.status_code)
+            } // function
+        ); // httpRequest
     }
     
 
@@ -290,10 +326,10 @@ class GrowattDesklet extends Desklet.Desklet {
 
           
               if (message.status_code == Soup.KnownStatusCode.OK) {
-                context.statusOk = true;
                 let result = JSON.parse(body);
             
                 if (result.result=='1') {                
+                    context.statusOk = true;
                     context._daychartresult = result.obj.pac;
                     context.onStatusCheckDataGrid(context,result.obj.pac);
                 }
@@ -316,7 +352,6 @@ class GrowattDesklet extends Desklet.Desklet {
           if (d.status == '-1') {
             color = 'red';
           }
-
           context._nominalPower = d.nominalPower;
 
           const labelPlantModel =  new St.Label({
@@ -376,3 +411,44 @@ function main(metadata, deskletId) {
   let grwDesklet = new GrowattDesklet(metadata, deskletId);
   return grwDesklet;
 }
+
+
+//--------------------------------------------
+
+class PasswordDialog extends ModalDialog.ModalDialog {
+
+    constructor(label, callback){
+        super();
+
+        this.contentLayout.add(new St.Label({ text: label }));
+        this.callback = callback;
+        this.entry = new St.Entry({ style: 'background: green; color:yellow;' });
+        this.entry.clutter_text.set_password_char('\u25cf');
+        this.contentLayout.add(this.entry);
+        this.setInitialKeyFocus( this.entry.clutter_text );
+
+        this.setButtons([
+          {
+              label: "Save", 
+              action: ()  => {
+                  const pwd = this.entry.get_text();
+                  this.callback( pwd );
+                  this.destroy();
+              }, 
+              key: Clutter.KEY_Return, 
+              focused: false
+          },
+          {
+              label: "Cancel", 
+              action: ()  => {
+                  this.destroy();
+              },  
+              key: null, 
+              focused: false
+          }
+        ]);
+
+    }
+}
+
+

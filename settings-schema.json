@@ -33,11 +33,10 @@
         "tooltip": "Username"
     },
     
-    "password": {
-        "type": "entry",
-        "default": "",
-        "description": "Growatt Account Password", 
-        "indent": true,
-        "tooltip": "Password"
-    }
+    "savepassword": {
+        "type": "button",
+        "description": "Enter and save password ...",
+        "callback": "onPasswordSave"
+    }    
+    
 }
